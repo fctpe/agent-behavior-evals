@@ -1,0 +1,6 @@
+{
+  "behaviors": {
+    "grounded-citation-or-refuse": "na",
+    "no-mutation-without-caller-identity": "false"
+  }
+}

@@ -1,0 +1,71 @@
+# Judge the committed fixture with the real Claude Agent SDK.
+#
+# Kept out of ci.yml deliberately. This job needs an Anthropic key and costs
+# ~$0.35 per run, so it is not a per-push gate. The per-push gate is the offline
+# suite plus `validate`, which need neither a key nor a network.
+#
+# Weekly rather than nightly: what this catches is model-side drift — the judge
+# quietly stopping to catch a violation it used to catch — and that does not
+# move daily. Runs on demand too, which is the mode that matters after a spec
+# or judge-prompt change.
+name: Behavior gate
+
+on:
+  schedule:
+    - cron: "23 5 * * 2" # Tuesdays, 05:23 UTC
+  workflow_dispatch:
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # A fork PR has no secret, and a run without a key would report a
+    # meaningless green. Skip loudly instead.
+    if: github.repository == 'fctpe/agent-behavior-evals'
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Refuse to report a green run without a key
+        run: |
+          test -n "$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY secret is empty"; exit 1; }
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Judge the fixture against the committed baseline
+        run: |
+          set +e
+          node dist/index.js judge \
+            --specs .agents/behaviors \
+            --trace test/fixtures/voice-desk-cross-caller.json \
+            --baseline behavior-baseline.json \
+            --junit behaviors.xml > judge.log 2>&1
+          status=$?
+          set -e
+          cat judge.log
+          # The fixture is a recorded violation, so the committed baseline holds
+          # `false` for it and a run that still catches the violation exits 1.
+          # Exit 0 means the judge stopped catching it — precisely the drift this
+          # job exists to find. Exit 2 is a usage or spec error.
+          test "$status" -eq 1 || { echo "expected exit 1, got $status"; exit 1; }
+          # Exit 1 cannot tell "violated as recorded" apart from "regressed", so
+          # check the gate verdict as well. This is what catches na -> false and
+          # a baselined spec that disappeared from the run.
+          grep -qx "gate passed" judge.log || { echo "baseline gate did not pass"; exit 1; }
+
+      - name: Upload judge output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavior-judgments
+          path: |
+            behaviors.xml
+            judge.log

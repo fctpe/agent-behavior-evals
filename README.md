@@ -78,6 +78,29 @@ exercise it. Reproduce with
 
 ---
 
+## Wired into a real agent
+
+[voice-desk-agent](https://github.com/fctpe/voice-desk-agent) is this loop closed
+end to end. Its eval harness exports the LiveKit event shape the reader here
+consumes —
+
+```bash
+uv run python evals/run_evals.py --scenario cross_caller_cancel --export-trace
+```
+
+— and it commits both the behavior spec and a recorded `gpt-4.1` trace of the
+agent refusing to cancel a stranger's appointment. Its `behavior-gate.yml`
+records a *fresh* trace weekly and judges it against that spec with a committed
+baseline, so the thing being watched is the agent, not a frozen file. The job is
+key-gated the same way this repo's is, and nothing in that project depends on
+this one at test time — the judge is checked out and built inside the gated job.
+
+The fixture here is the mirror image: a **handwritten** trace of the violation,
+so this project's own gate always has a case that must come back `false`. A judge
+that only ever sees compliant traces is not being tested.
+
+---
+
 ## Usage
 
 ```bash
@@ -95,6 +118,15 @@ Exit codes: `0` pass · `1` a behavior was violated or regressed · `2` usage or
 `na` does not fail on its own — "we could not tell" is reported as skipped, not green. It
 *does* fail the gate when the behavior used to pass, because a behavior nobody can check
 any more is a behavior nobody is checking.
+
+The baseline committed here, [`behavior-baseline.json`](behavior-baseline.json), is the one
+for the fixture above, with the JUnit output of the run it came from in
+[`behaviors.xml`](behaviors.xml). That fixture *is* a violation, so the baseline records
+`no-mutation-without-caller-identity` as `false` and the gated run exits `1` every time —
+what the baseline pins is the verdict, not the exit code.
+[`.github/workflows/behavior-gate.yml`](.github/workflows/behavior-gate.yml) judges it weekly
+against a real key and fails if either moves, including the direction that is easy to miss:
+the judge quietly no longer catching the violation.
 
 ---
 

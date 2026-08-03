@@ -2,8 +2,22 @@
   "name": "agent-behavior-evals",
   "version": "0.1.0",
   "description": "Judge recorded agent traces against behavior specs. Vendor-neutral, offline-testable, CI-gated.",
+  "keywords": [
+    "agent-evals",
+    "llm-as-a-judge",
+    "behavior-specs",
+    "agentbehavior",
+    "opentelemetry",
+    "claude-agent-sdk",
+    "ai-agents"
+  ],
   "type": "module",
   "license": "MIT",
+  "author": "Furkan Cakmaktepe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fctpe/agent-behavior-evals.git"
+  },
   "engines": {
     "node": ">=20"
   },
