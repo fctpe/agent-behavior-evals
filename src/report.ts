@@ -51,8 +51,13 @@ export function renderConsole(outcomes: SpecOutcome[], gate: GateReport | null):
     if (notable.length > 0) {
       lines.push('');
       for (const e of notable) {
+        // An `eroded` line whose verdicts read "true -> true" is baffling
+        // without the counts; they are the entire reason it failed.
+        const coverage = e.coverage
+          ? ` (evidence: ${e.coverage.baseline} -> ${e.coverage.current} of ${e.coverage.total} sections decided)`
+          : '';
         lines.push(
-          `  ${e.change.padEnd(10)} ${e.spec}: ${e.baseline ?? '-'} -> ${e.current ?? '-'}`,
+          `  ${e.change.padEnd(10)} ${e.spec}: ${e.baseline ?? '-'} -> ${e.current ?? '-'}${coverage}`,
         );
       }
     }

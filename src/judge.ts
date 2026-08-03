@@ -190,6 +190,85 @@ interface RawVerdict {
   reasoning?: string;
 }
 
+/**
+ * Turn one raw judge response into a judgment, enforcing in code the two things
+ * the prompt merely asks for. Exported and pure so the offline suite can attack
+ * it: the checks below are the product, and a check that only runs when someone
+ * spends $0.35 on a live judge is a check nobody runs.
+ *
+ * Downgrades to `na` (never to a pass, never to a fail) when:
+ *
+ * - **A cited event id is not in the trace.** This used to test
+ *   `cited.length === 0` and nothing else, so any non-empty string satisfied
+ *   it — a judge that invented `evt-42` cleared the same bar as one that read
+ *   the trace. The events are in memory right here. Not looking at them made
+ *   "cites its evidence" a prompt instruction wearing the costume of an
+ *   enforced guarantee, which is exactly the failure this tool exists to catch
+ *   in other systems.
+ * - **A `false` verdict names no violated clause.** `violatedClause` is
+ *   optional in the schema, so a judge could report a violation and decline to
+ *   say of what — unreviewable, and indistinguishable from deciding on vibes.
+ *
+ * Both are downgrades rather than errors because an unsubstantiated verdict is
+ * an undecided one, and `na` is the value the fold already treats as "this said
+ * nothing". Turning it into a `false` would let a sloppy judge fail a build.
+ */
+export function resolveJudgment(
+  raw: RawVerdict | undefined,
+  title: string,
+  trace: Trace,
+  failure = '',
+): MetaJudgment {
+  if (!raw?.verdict) {
+    // Fail closed: an unusable judge response is reported as undecidable with
+    // a typed reason, never quietly folded in as a pass.
+    return {
+      title,
+      verdict: 'na',
+      naReason: 'judge_error',
+      evidenceEventIds: [],
+      reasoning: failure
+        ? `Judge did not return a usable verdict (${failure}).`
+        : 'Judge did not return a usable verdict.',
+    };
+  }
+
+  const known = new Set(trace.events.map((event) => event.id));
+  const cited = raw.evidenceEventIds ?? [];
+  const real = cited.filter((id) => known.has(id));
+  const fabricated = cited.filter((id) => !known.has(id));
+  const missingClause = raw.verdict === 'false' && !raw.violatedClause?.trim();
+
+  const reason =
+    raw.verdict === 'na'
+      ? ''
+      : fabricated.length > 0
+        ? `cited ${fabricated.length} event id(s) absent from the trace: ${fabricated.join(', ')}`
+        : real.length === 0
+          ? 'verdict cited no trace events'
+          : missingClause
+            ? 'false verdict named no violated clause'
+            : '';
+
+  const verdict: Verdict = reason ? 'na' : raw.verdict;
+
+  return {
+    title,
+    verdict,
+    naReason:
+      verdict === 'na'
+        ? ((reason ? 'insufficient_evidence' : raw.naReason) as NaReason)
+        : undefined,
+    violatedClause: verdict === 'false' ? raw.violatedClause : undefined,
+    // Only ids that resolve. Keeping fabricated ones would put unresolvable
+    // references into the report and the JUnit output.
+    evidenceEventIds: real,
+    reasoning: reason
+      ? `${raw.reasoning ?? ''} [downgraded to na: ${reason}]`.trim()
+      : (raw.reasoning ?? ''),
+  };
+}
+
 /** An empty trace can only ever be `na`; do not spend a model call proving it. */
 function emptyTraceJudgments(spec: BehaviorSpec): MetaJudgment[] {
   return spec.metaBehaviors.map((meta) => ({
@@ -252,39 +331,7 @@ export async function judgeSpec(
       }
     }
 
-    if (!raw?.verdict) {
-      // Fail closed: an unusable judge response is reported as undecidable with
-      // a typed reason, never quietly folded in as a pass.
-      judgments.push({
-        title: meta.title,
-        verdict: 'na',
-        naReason: 'judge_error',
-        evidenceEventIds: [],
-        reasoning: failure
-          ? `Judge did not return a usable verdict (${failure}).`
-          : 'Judge did not return a usable verdict.',
-      });
-      continue;
-    }
-
-    const cited = raw.evidenceEventIds ?? [];
-    // The judge is told a verdict with no citations must be `na`. Enforce it
-    // here too rather than trusting it — a confident claim with no evidence is
-    // exactly what this tool exists to catch.
-    const verdict: Verdict = raw.verdict !== 'na' && cited.length === 0 ? 'na' : raw.verdict;
-
-    judgments.push({
-      title: meta.title,
-      verdict,
-      naReason:
-        verdict === 'na' ? ((raw.naReason ?? 'insufficient_evidence') as NaReason) : undefined,
-      violatedClause: verdict === 'false' ? raw.violatedClause : undefined,
-      evidenceEventIds: cited,
-      reasoning:
-        verdict !== raw.verdict
-          ? `${raw.reasoning ?? ''} [downgraded to na: verdict cited no trace events]`.trim()
-          : (raw.reasoning ?? ''),
-    });
+    judgments.push(resolveJudgment(raw, meta.title, trace, failure));
   }
 
   return { judgments, costUsd };
