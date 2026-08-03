@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fold } from './fold.js';
-import { type Baseline, compareToBaseline, type SpecResult, toBaseline } from './gate.js';
+import { compareToBaseline, parseBaseline, type SpecResult, toBaseline } from './gate.js';
 import { DEFAULT_JUDGE_MODEL, judgeSpec } from './judge.js';
 import { renderConsole, renderJUnit, type SpecOutcome } from './report.js';
 import { type BehaviorSpec, parseSpec, SpecError } from './spec.js';
@@ -97,6 +97,25 @@ async function cmdJudge(args: {
     return 2;
   }
   const trace = mergeTraces(loadTraces(args.traces));
+  // Fail closed on a file the adapters found nothing in — a mistyped path, an
+  // artifact that never got written, a shape neither reader recognizes. Judging
+  // it costs nothing and reports every behavior `na`, which exits 0 and, under
+  // a baseline, reads as an improvement. A green run over a trace that was
+  // never read is precisely what this tool exists to catch.
+  if (trace.events.length === 0) {
+    console.error(
+      `No events read from ${args.traces.join(', ')} — expected OTLP/JSON (resourceSpans) or a LiveKit event list.`,
+    );
+    return 2;
+  }
+
+  // Read before judging, not after. Every input this run depends on is now
+  // checked while the run is still free — a mistyped --baseline path used to
+  // surface after the whole trace had been judged, at ~$0.35 a go.
+  const baseline =
+    args.baseline && !args.updateBaseline
+      ? parseBaseline(JSON.parse(readFileSync(args.baseline, 'utf8')), args.baseline)
+      : null;
 
   const outcomes: SpecOutcome[] = [];
   for (const spec of specs) {
@@ -111,26 +130,29 @@ async function cmdJudge(args: {
     });
   }
 
-  const results: SpecResult[] = outcomes.map((o) => ({ spec: o.spec, verdict: o.folded.verdict }));
+  const results: SpecResult[] = outcomes.map((o) => ({
+    spec: o.spec,
+    verdict: o.folded.verdict,
+    // Carried so the gate can catch coverage erosion under an unchanged verdict.
+    counts: o.folded.counts,
+  }));
 
-  if (args.updateBaseline && args.baseline) {
-    writeFileSync(args.baseline, `${JSON.stringify(toBaseline(results), null, 2)}\n`);
-    console.error(renderConsole(outcomes, null));
-    console.error(`\nwrote baseline ${args.baseline}`);
-    return 0;
-  }
-
-  let gate = null;
-  if (args.baseline) {
-    const baseline = JSON.parse(readFileSync(args.baseline, 'utf8')) as Baseline;
-    gate = compareToBaseline(results, baseline);
-  }
+  const gate = baseline ? compareToBaseline(results, baseline) : null;
 
   console.error(renderConsole(outcomes, gate));
 
+  // Written on every path that judged something, including --update-baseline:
+  // the report of the run a baseline came from is the one worth keeping, and a
+  // flag that is silently ignored in one mode is worse than one that is absent.
   if (args.junit) {
     writeFileSync(args.junit, renderJUnit(outcomes));
     console.error(`wrote ${args.junit}`);
+  }
+
+  if (args.updateBaseline && args.baseline) {
+    writeFileSync(args.baseline, `${JSON.stringify(toBaseline(results), null, 2)}\n`);
+    console.error(`wrote baseline ${args.baseline}`);
+    return 0;
   }
 
   // A violated behavior fails whether or not a baseline is in play. `na` does

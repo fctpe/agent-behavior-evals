@@ -104,9 +104,11 @@ that only ever sees compliant traces is not being tested.
 ## Usage
 
 ```bash
-behaveval validate .agents/behaviors          # structural check — no model calls, no key
+pnpm install && pnpm build   # not published to npm; the `behaveval` bin is the built dist/index.js
 
-behaveval judge \
+node dist/index.js validate .agents/behaviors   # structural check — no model calls, no key
+
+node dist/index.js judge \
   --specs .agents/behaviors \
   --trace traces/run.otlp.json \
   --baseline behavior-baseline.json \
@@ -118,6 +120,20 @@ Exit codes: `0` pass · `1` a behavior was violated or regressed · `2` usage or
 `na` does not fail on its own — "we could not tell" is reported as skipped, not green. It
 *does* fail the gate when the behavior used to pass, because a behavior nobody can check
 any more is a behavior nobody is checking.
+
+**The baseline pins coverage, not just the verdict.** Folding is `false` if any section
+failed, `na` only if *every* section was `na`, and `true` otherwise — so a spec with six
+sections that decays to one `true` and five `na` still folds to `true`. Pinning the verdict
+alone made that indistinguishable from six passes: five sixths of the evidence could
+evaporate (a renamed event type, an exporter dropping spans, a judge that stopped finding
+what it needs) while the gate reported `unchanged`. Each baseline entry therefore records
+how many sections returned a decisive verdict, and losing coverage is its own outcome —
+`eroded` — that fails the build and prints `evidence: 6 -> 1 of 6 sections decided`, because
+an `eroded` line reading `true -> true` is otherwise baffling. Verdict-only baselines still
+load; they carry no counts, so erosion goes unchecked for those specs until a run rewrites
+them — reported rather than silently treated as zero, which would make every run look like
+growth. The committed baseline below is still in that older shape, and stays that way until
+a live keyed run regenerates it: writing counts by hand would be inventing eval data.
 
 The baseline committed here, [`behavior-baseline.json`](behavior-baseline.json), is the one
 for the fixture above, with the JUnit output of the run it came from in
@@ -148,9 +164,25 @@ context entirely, `permissionMode: 'dontAsk'` denies anything not pre-approved, 
 `settingSources: []` ignores the host's config. A judge that could read the repo could read
 the answer, and a judge whose behavior depends on whose laptop it runs on is not a judge.
 
-**It fails closed.** An unusable judge response is `na` with reason `judge_error`, never
-folded in as a pass. A verdict citing no trace events is downgraded to `na` in code — a
-confident claim with no evidence is exactly what this tool exists to catch.
+**It fails closed, and the checks are real code, not prompt text.** An unusable judge
+response is `na` with reason `judge_error`, never folded in as a pass. Beyond that, two
+guarantees are enforced in `resolveJudgment` rather than asked for in the prompt:
+
+- **Cited event ids are resolved against the trace.** This previously checked only that the
+  list was non-empty, which any fabricated string satisfies — so a judge that invented
+  `evt-999` cleared the same bar as one that read the trace, with the events sitting in
+  memory one line away. Citing an id that is not in the trace now downgrades the verdict to
+  `na`, and fabricated ids are stripped from the report rather than left as dead references
+  in the JUnit output.
+- **A `false` verdict must name the clause it broke.** `violatedClause` is optional in the
+  verdict schema, so a violation could be reported without saying of what — unreviewable,
+  and indistinguishable from a judge deciding on vibes.
+
+Both downgrade to `na`, never to a pass and never to a fail: an unsubstantiated verdict is
+an undecided one, and turning it into `false` would let a sloppy judge fail someone's build.
+`resolveJudgment` is exported and pure so [`test/judge-evidence.test.ts`](test/judge-evidence.test.ts)
+can attack it offline — a guarantee that only runs inside a paid live judge call is a
+guarantee nobody regression-tests, which is how both of these survived.
 
 ---
 
@@ -173,7 +205,7 @@ confident claim with no evidence is exactly what this tool exists to catch.
 
 ```bash
 pnpm install
-pnpm lint && pnpm typecheck && pnpm test   # 40 tests, no API calls
+pnpm lint && pnpm typecheck && pnpm test   # 61 tests, no API calls
 pnpm build
 ```
 
