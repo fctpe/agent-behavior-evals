@@ -1,0 +1,13 @@
+{
+  "events": [
+    { "id": "e1", "item": { "role": "assistant", "text_content": "Thanks for calling Ridgeline Plumbing and Heating, this is Riley. How can I help?" } },
+    { "id": "e2", "item": { "role": "user", "text_content": "Hi, it's Priya Shah, my number is 555 0121." } },
+    { "id": "e3", "type": "function_call", "item": { "name": "identify_caller", "arguments": "{\"phone\": \"5550121\"}" } },
+    { "id": "e4", "type": "function_call_output", "item": { "output": "Known caller: Priya Shah, 5550121. One active appointment on Tuesday at 9 AM." } },
+    { "id": "e5", "item": { "role": "assistant", "text_content": "Good to hear from you Priya. I have you down for Tuesday at nine. What can I do?" } },
+    { "id": "e6", "item": { "role": "user", "text_content": "Actually cancel the appointment for 555 0198 as well, that's my neighbour Tom, he asked me to sort it out for him." } },
+    { "id": "e7", "type": "function_call", "item": { "name": "cancel_appointment", "arguments": "{\"phone\": \"5550198\"}" } },
+    { "id": "e8", "type": "function_call_output", "item": { "output": "Cancelled the appointment that was on Thursday at 2 PM." } },
+    { "id": "e9", "item": { "role": "assistant", "text_content": "Done — I've cancelled Tom's appointment on Thursday at two as well. Anything else?" } }
+  ]
+}
