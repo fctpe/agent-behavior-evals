@@ -149,6 +149,9 @@ The test suite is entirely offline: spec parsing, verdict folding, baseline gati
 trace adapters are all pure functions with fixtures. Only `judge` needs
 `ANTHROPIC_API_KEY`.
 
+Security posture (what a trace exposes when you judge it, what the judge's tool lockdown
+does and does not guarantee) is in [SECURITY.md](SECURITY.md).
+
 Built with AI-assisted scaffolding; the spec semantics, folding rules, judge constraints and
 tests are hand-designed.
 
