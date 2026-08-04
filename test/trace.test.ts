@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { fromLiveKitEvents, fromOtlpJson, readTrace, truncate } from '../src/trace.js';
+import {
+  fromLiveKitEvents,
+  fromOtlpJson,
+  mergeTraces,
+  readTrace,
+  TraceError,
+  truncate,
+} from '../src/trace.js';
 
 describe('truncate', () => {
   it('leaves short values alone', () => {
@@ -35,7 +42,10 @@ describe('fromLiveKitEvents', () => {
 
   it('falls back to positional ids only when none are present', () => {
     const trace = fromLiveKitEvents([{ item: { role: 'user' } }], 't');
-    expect(trace.events[0]?.id).toBe('evt-0');
+    // Namespaced by trace, not a bare `evt-0`: the fallback is positional, so
+    // every export that lacks ids produces the same sequence, and two of them
+    // merged used to be several distinct events sharing one id.
+    expect(trace.events[0]?.id).toBe('t#evt-0');
   });
 });
 
@@ -91,5 +101,95 @@ describe('readTrace', () => {
 
   it('falls back to the LiveKit reader', () => {
     expect(readTrace([], 't').source).toBe('livekit');
+  });
+});
+
+/**
+ * Every event id has to identify exactly one event, because the judge cites ids
+ * as evidence and `get_event` resolves a citation with `find` — first match
+ * wins. A duplicate meant a verdict could quote one event and point at another,
+ * with nothing reporting the substitution. Ambiguous evidence reads as
+ * supported evidence, which is worse than none.
+ */
+describe('event ids identify one event each', () => {
+  it('refuses a LiveKit export with a repeated id', () => {
+    expect(() =>
+      fromLiveKitEvents(
+        [
+          { id: 'a', item: { role: 'user', text_content: 'cancel it' } },
+          { id: 'a', item: { role: 'assistant', text_content: 'which appointment?' } },
+        ],
+        't',
+      ),
+    ).toThrow(TraceError);
+  });
+
+  it('refuses an OTLP export with a repeated span id', () => {
+    const span = (name: string) => ({ spanId: 'dup', name, startTimeUnixNano: '1' });
+    expect(() =>
+      fromOtlpJson({ resourceSpans: [{ scopeSpans: [{ spans: [span('a'), span('b')] }] }] }, 't'),
+    ).toThrow(TraceError);
+  });
+
+  // Control. Without this, the two assertions above would still pass if the
+  // reader had started throwing on every trace, which would be a far worse bug
+  // than the one they exist to catch.
+  it('accepts distinct ids', () => {
+    const trace = fromLiveKitEvents(
+      [
+        { id: 'a', item: { role: 'user', text_content: 'cancel it' } },
+        { id: 'b', item: { role: 'assistant', text_content: 'which appointment?' } },
+      ],
+      't',
+    );
+    expect(trace.events.map((e) => e.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('mergeTraces', () => {
+  const stamped = (id: string, ts: string) => ({ id, item: { role: 'user' }, ts });
+
+  it('interleaves by timestamp rather than by argument order', () => {
+    const late = fromLiveKitEvents([stamped('x', '300')], 'late.json');
+    const early = fromLiveKitEvents([stamped('y', '100')], 'early.json');
+    // Passed late-first on purpose: flatMap would have kept that order.
+    const merged = mergeTraces([late, early]);
+    expect(merged.events.map((e) => e.id)).toEqual(['early.json#y', 'late.json#x']);
+  });
+
+  it('orders numeric timestamps numerically, not lexically', () => {
+    // '9' sorts after '10' as a string. Nanosecond stamps differ in digit count
+    // across a second boundary, so this is the ordinary case, not a corner one.
+    const later = fromLiveKitEvents([stamped('later', '10')], 'b.json');
+    const sooner = fromLiveKitEvents([stamped('sooner', '9')], 'a.json');
+    const merged = mergeTraces([later, sooner]);
+    expect(merged.events.map((e) => e.id)).toEqual(['a.json#sooner', 'b.json#later']);
+  });
+
+  it('keeps ids apart when two exports use the same one', () => {
+    const a = fromLiveKitEvents([stamped('evt-1', '1')], 'a.json');
+    const b = fromLiveKitEvents([stamped('evt-1', '2')], 'b.json');
+    const merged = mergeTraces([a, b]);
+    expect(merged.events.map((e) => e.id)).toEqual(['a.json#evt-1', 'b.json#evt-1']);
+  });
+
+  it('refuses a merge that is only partly timestamped', () => {
+    const withTs = fromLiveKitEvents([stamped('x', '1')], 'a.json');
+    const without = fromLiveKitEvents([{ id: 'y', item: { role: 'user' } }], 'b.json');
+    expect(() => mergeTraces([withTs, without])).toThrow(/partly ordered/);
+  });
+
+  it('warns rather than silently claiming a timeline when nothing is timestamped', () => {
+    const a = fromLiveKitEvents([{ id: 'x', item: { role: 'user' } }], 'a.json');
+    const b = fromLiveKitEvents([{ id: 'y', item: { role: 'user' } }], 'b.json');
+    const warnings: string[] = [];
+    const merged = mergeTraces([a, b], (m) => warnings.push(m));
+    expect(merged.events.map((e) => e.id)).toEqual(['a.json#x', 'b.json#y']);
+    expect(warnings.join('\n')).toMatch(/order the traces were passed in/);
+  });
+
+  it('leaves a single trace exactly as it was read', () => {
+    const only = fromLiveKitEvents([{ id: 'x', item: { role: 'user' } }], 'a.json');
+    expect(mergeTraces([only])).toBe(only);
   });
 });

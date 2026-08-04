@@ -6,7 +6,7 @@ import { compareToBaseline, parseBaseline, type SpecResult, toBaseline } from '.
 import { DEFAULT_JUDGE_MODEL, judgeSpec } from './judge.js';
 import { renderConsole, renderJUnit, type SpecOutcome } from './report.js';
 import { type BehaviorSpec, parseSpec, SpecError } from './spec.js';
-import { readTrace, type Trace } from './trace.js';
+import { mergeTraces, readTrace, type Trace, TraceError } from './trace.js';
 
 const USAGE = `behaveval — judge recorded agent traces against behavior specs
 
@@ -58,17 +58,6 @@ function loadTraces(paths: string[]): Trace[] {
   });
 }
 
-/** Merge several traces into one timeline. Behaviors are judged per spec, not
- *  per file, so a run split across artifacts still reads as one trajectory. */
-function mergeTraces(traces: Trace[]): Trace {
-  if (traces.length === 1 && traces[0]) return traces[0];
-  return {
-    id: traces.map((t) => t.id).join('+'),
-    source: [...new Set(traces.map((t) => t.source))].join('+'),
-    events: traces.flatMap((t) => t.events),
-  };
-}
-
 async function cmdValidate(dir: string): Promise<number> {
   const specs = loadSpecs(dir);
   if (specs.length === 0) {
@@ -96,7 +85,7 @@ async function cmdJudge(args: {
     console.error(`No BEHAVIOR.md found under ${resolve(args.specs)}`);
     return 2;
   }
-  const trace = mergeTraces(loadTraces(args.traces));
+  const trace = mergeTraces(loadTraces(args.traces), (message) => console.error(message));
   // Fail closed on a file the adapters found nothing in — a mistyped path, an
   // artifact that never got written, a shape neither reader recognizes. Judging
   // it costs nothing and reports every behavior `na`, which exits 0 and, under
@@ -216,6 +205,13 @@ export async function main(argv: string[]): Promise<number> {
   } catch (err) {
     if (err instanceof SpecError) {
       console.error(`spec error: ${err.message}`);
+      return 2;
+    }
+    // Exit 2, not 1. A trace the reader cannot cite against is a bad input, and
+    // reporting it as a behavior violation would put a failure on the agent
+    // that belongs to the artifact.
+    if (err instanceof TraceError) {
+      console.error(`trace error: ${err.message}`);
       return 2;
     }
     console.error(`${(err as Error).message}`);
