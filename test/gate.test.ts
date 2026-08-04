@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { compareToBaseline, parseBaseline, type SpecResult, toBaseline } from '../src/gate.js';
 
@@ -174,5 +175,60 @@ describe('parseBaseline', () => {
     );
     expect(parsed.behaviors.alpha).toBe('true');
     expect(parsed.behaviors.beta).toEqual({ verdict: 'na', decisive: 0, total: 2 });
+  });
+});
+
+/**
+ * The gate cases above all build their own baselines, so every one of them
+ * passed while the baseline actually committed here was verdict-only — which
+ * carries no counts and therefore switches coverage-erosion detection off for
+ * every spec in it. The flagship check was documented, implemented, tested
+ * against synthetic input, and dark in the one file that ships.
+ */
+describe('the committed baseline enables the checks it is committed for', () => {
+  const committed = parseBaseline(
+    JSON.parse(readFileSync(new URL('../behavior-baseline.json', import.meta.url), 'utf8')),
+    'behavior-baseline.json',
+  );
+
+  it('carries counts for every behavior, not just a verdict', () => {
+    const entries = Object.entries(committed.behaviors);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [spec, entry] of entries) {
+      expect(typeof entry, `${spec} is verdict-only, so erosion goes unchecked`).not.toBe('string');
+      if (typeof entry === 'string') continue;
+      expect(entry.decisive).toBeTypeOf('number');
+      expect(entry.total).toBeGreaterThanOrEqual(entry.decisive);
+    }
+  });
+
+  it('reports erosion against it rather than a silent pass', () => {
+    // Replay each committed behavior with one fewer decided section. Under the
+    // verdict-only shape this compared equal and passed, which is the control:
+    // the assertion can only hold because the counts are there.
+    const eroded: SpecResult[] = Object.entries(committed.behaviors).map(([spec, entry]) => {
+      const verdict = typeof entry === 'string' ? entry : entry.verdict;
+      const decisive = typeof entry === 'string' ? 1 : entry.decisive;
+      const total = typeof entry === 'string' ? 1 : entry.total;
+      const decided = Math.max(0, decisive - 1);
+      return {
+        spec,
+        verdict,
+        counts: {
+          true: verdict === 'true' ? decided : 0,
+          false: verdict === 'false' ? decided : 0,
+          na: total - decided,
+        },
+      };
+    });
+
+    const gate = compareToBaseline(eroded, committed);
+    const decisiveSpecs = Object.entries(committed.behaviors).filter(
+      ([, e]) => typeof e !== 'string' && e.decisive > 0,
+    );
+    // Only specs that had decisive coverage can lose any.
+    expect(decisiveSpecs.length).toBeGreaterThan(0);
+    expect(gate.passed).toBe(false);
+    expect(gate.entries.filter((e) => e.change === 'eroded').length).toBe(decisiveSpecs.length);
   });
 });

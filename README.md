@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/fctpe/agent-behavior-evals/actions/workflows/ci.yml/badge.svg)](https://github.com/fctpe/agent-behavior-evals/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Node >=20](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
+![Node >=22](https://img.shields.io/badge/node-%3E%3D22-brightgreen)
 
 **Judge what an agent *did*, not just what it returned.** Write down the conduct you
 expect as a behavior spec, then score recorded traces against it — offline, in CI, with a
@@ -132,8 +132,16 @@ how many sections returned a decisive verdict, and losing coverage is its own ou
 an `eroded` line reading `true -> true` is otherwise baffling. Verdict-only baselines still
 load; they carry no counts, so erosion goes unchecked for those specs until a run rewrites
 them — reported rather than silently treated as zero, which would make every run look like
-growth. The committed baseline below is still in that older shape, and stays that way until
-a live keyed run regenerates it: writing counts by hand would be inventing eval data.
+growth.
+
+The committed baseline was in that older shape until a keyed run on 2026-08-04 regenerated
+it, which meant this whole section described a check that was switched off in the only file
+that ships. Every gate test built its own baseline, so all of them passed over it. There is
+now a test that reads the committed baseline itself, asserts it carries counts, and replays
+it one decided section short to confirm the gate answers `eroded` — the assertion only holds
+because the counts are there. The verdicts did not move (`na` and `false`), so this was a
+shape migration and nothing more; the counts came from the run rather than from a keyboard,
+because writing them by hand would be inventing eval data.
 
 The baseline committed here, [`behavior-baseline.json`](behavior-baseline.json), is the one
 for the fixture above, with the JUnit output of the run it came from in
@@ -205,7 +213,7 @@ guarantee nobody regression-tests, which is how both of these survived.
 
 ```bash
 pnpm install
-pnpm lint && pnpm typecheck && pnpm test   # 61 tests, no API calls
+pnpm lint && pnpm typecheck && pnpm test   # 72 tests, no API calls
 pnpm build
 ```
 
