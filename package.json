@@ -19,7 +19,7 @@
     "url": "git+https://github.com/fctpe/agent-behavior-evals.git"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.17.0",
   "bin": {
