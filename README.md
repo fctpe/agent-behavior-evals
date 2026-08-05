@@ -78,6 +78,46 @@ exercise it. Reproduce with
 
 ---
 
+## Usage
+
+```bash
+pnpm install && pnpm build   # not published to npm; the `behaveval` bin is the built dist/index.js
+
+node dist/index.js validate .agents/behaviors   # structural check — no model calls, no key
+
+node dist/index.js judge \
+  --specs .agents/behaviors \
+  --trace traces/run.otlp.json \
+  --baseline behavior-baseline.json \
+  --junit behaviors.xml
+```
+
+Exit codes: `0` pass · `1` a behavior was violated or regressed · `2` usage or spec error.
+
+`na` does not fail on its own — "we could not tell" is reported as skipped, not green. It
+*does* fail the gate when the behavior used to pass, because a behavior nobody can check
+any more is a behavior nobody is checking.
+
+**The baseline pins coverage, not just the verdict.** Folding is `false` if any section
+failed, `na` only if *every* section was `na`, and `true` otherwise — so a spec with six
+sections that decays to one `true` and five `na` still folds to `true`, and a verdict-only
+baseline cannot tell that apart from six passes. Each entry therefore also records how many
+sections returned a decisive verdict, and losing coverage is its own outcome — `eroded` —
+that fails the build and prints `evidence: 6 -> 1 of 6 sections decided`. Verdict-only
+baselines still load and are reported as unchecked for erosion until a run rewrites them
+([ADR-0002](docs/adr/0002-baselines-pin-coverage-not-just-verdicts.md)).
+
+The baseline committed here, [`behavior-baseline.json`](behavior-baseline.json), is the one
+for the fixture above, with the JUnit output of the run it came from in
+[`behaviors.xml`](behaviors.xml). That fixture *is* a violation, so the baseline records
+`no-mutation-without-caller-identity` as `false` and the gated run exits `1` every time —
+what the baseline pins is the verdict, not the exit code.
+[`.github/workflows/behavior-gate.yml`](.github/workflows/behavior-gate.yml) judges it weekly
+against a real key and fails if either moves, including the direction that is easy to miss:
+the judge quietly no longer catching the violation.
+
+---
+
 ## Wired into a real agent
 
 [voice-desk-agent](https://github.com/fctpe/voice-desk-agent) is this loop closed
@@ -101,65 +141,13 @@ that only ever sees compliant traces is not being tested.
 
 ---
 
-## Usage
-
-```bash
-pnpm install && pnpm build   # not published to npm; the `behaveval` bin is the built dist/index.js
-
-node dist/index.js validate .agents/behaviors   # structural check — no model calls, no key
-
-node dist/index.js judge \
-  --specs .agents/behaviors \
-  --trace traces/run.otlp.json \
-  --baseline behavior-baseline.json \
-  --junit behaviors.xml
-```
-
-Exit codes: `0` pass · `1` a behavior was violated or regressed · `2` usage or spec error.
-
-`na` does not fail on its own — "we could not tell" is reported as skipped, not green. It
-*does* fail the gate when the behavior used to pass, because a behavior nobody can check
-any more is a behavior nobody is checking.
-
-**The baseline pins coverage, not just the verdict.** Folding is `false` if any section
-failed, `na` only if *every* section was `na`, and `true` otherwise — so a spec with six
-sections that decays to one `true` and five `na` still folds to `true`. Pinning the verdict
-alone made that indistinguishable from six passes: five sixths of the evidence could
-evaporate (a renamed event type, an exporter dropping spans, a judge that stopped finding
-what it needs) while the gate reported `unchanged`. Each baseline entry therefore records
-how many sections returned a decisive verdict, and losing coverage is its own outcome —
-`eroded` — that fails the build and prints `evidence: 6 -> 1 of 6 sections decided`, because
-an `eroded` line reading `true -> true` is otherwise baffling. Verdict-only baselines still
-load; they carry no counts, so erosion goes unchecked for those specs until a run rewrites
-them — reported rather than silently treated as zero, which would make every run look like
-growth.
-
-The committed baseline was in that older shape until a keyed run on 2026-08-04 regenerated
-it, which meant this whole section described a check that was switched off in the only file
-that ships. Every gate test built its own baseline, so all of them passed over it. There is
-now a test that reads the committed baseline itself, asserts it carries counts, and replays
-it one decided section short to confirm the gate answers `eroded` — the assertion only holds
-because the counts are there. The verdicts did not move (`na` and `false`), so this was a
-shape migration and nothing more; the counts came from the run rather than from a keyboard,
-because writing them by hand would be inventing eval data.
-
-The baseline committed here, [`behavior-baseline.json`](behavior-baseline.json), is the one
-for the fixture above, with the JUnit output of the run it came from in
-[`behaviors.xml`](behaviors.xml). That fixture *is* a violation, so the baseline records
-`no-mutation-without-caller-identity` as `false` and the gated run exits `1` every time —
-what the baseline pins is the verdict, not the exit code.
-[`.github/workflows/behavior-gate.yml`](.github/workflows/behavior-gate.yml) judges it weekly
-against a real key and fails if either moves, including the direction that is easy to miss:
-the judge quietly no longer catching the violation.
-
----
-
 ## Design decisions
 
 **The folding is code, not model.** The judge answers one section at a time; the arithmetic
 that turns those into a verdict lives in [`src/fold.ts`](src/fold.ts). Any `false` → `false`;
 all `na` → `na` with a typed reason; otherwise `true`. Asking a model for the overall verdict
-invites it to average, to be charitable, and to upgrade "I could not tell" into "fine".
+invites it to average, to be charitable, and to upgrade "I could not tell" into "fine"
+([ADR-0001](docs/adr/0001-fold-verdicts-in-code.md)).
 
 **The judge is an agent because traces are long.** Behavior questions are usually about
 sequence — *did it consult the source before answering, did it escalate before scheduling* —
@@ -176,21 +164,18 @@ the answer, and a judge whose behavior depends on whose laptop it runs on is not
 response is `na` with reason `judge_error`, never folded in as a pass. Beyond that, two
 guarantees are enforced in `resolveJudgment` rather than asked for in the prompt:
 
-- **Cited event ids are resolved against the trace.** This previously checked only that the
-  list was non-empty, which any fabricated string satisfies — so a judge that invented
-  `evt-999` cleared the same bar as one that read the trace, with the events sitting in
-  memory one line away. Citing an id that is not in the trace now downgrades the verdict to
-  `na`, and fabricated ids are stripped from the report rather than left as dead references
-  in the JUnit output.
-- **A `false` verdict must name the clause it broke.** `violatedClause` is optional in the
-  verdict schema, so a violation could be reported without saying of what — unreviewable,
-  and indistinguishable from a judge deciding on vibes.
+- **Cited event ids are resolved against the trace.** Citing an id that is not in the trace
+  downgrades the verdict to `na`, and fabricated ids are stripped from the report rather
+  than left as dead references in the JUnit output.
+- **A `false` verdict must name the clause it broke**, or it downgrades to `na` —
+  `violatedClause` is optional in the verdict schema, and a violation reported without
+  saying of what is unreviewable.
 
 Both downgrade to `na`, never to a pass and never to a fail: an unsubstantiated verdict is
 an undecided one, and turning it into `false` would let a sloppy judge fail someone's build.
 `resolveJudgment` is exported and pure so [`test/judge-evidence.test.ts`](test/judge-evidence.test.ts)
-can attack it offline — a guarantee that only runs inside a paid live judge call is a
-guarantee nobody regression-tests, which is how both of these survived.
+attacks it offline with fabricated ids and clause-less violations
+([ADR-0002](docs/adr/0002-baselines-pin-coverage-not-just-verdicts.md)).
 
 ---
 
@@ -206,6 +191,11 @@ guarantee nobody regression-tests, which is how both of these survived.
   their absence rather than assuming a shape that has not settled.
 - **A spec is only as good as its clauses.** Vague prose produces vague judgments. The
   `Decision:` line is what the judge actually leans on.
+- **A green result on a trace you do not control is worth what that trace is worth.** Trace
+  content is untrusted input: if the agent under test consumed attacker-controlled text,
+  that text is now inside the evidence and can address the judge directly. Code-side
+  folding, event-id resolution and the verbatim-clause requirement blunt it; none of them
+  closes it ([SECURITY.md](SECURITY.md)).
 
 ---
 
